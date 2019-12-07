@@ -15,12 +15,13 @@
  */
 package com.google.android.exoplayer2.text.ssa;
 
+import androidx.annotation.Nullable;
 import android.text.TextUtils;
-import android.util.Log;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.text.Cue;
 import com.google.android.exoplayer2.text.SimpleSubtitleDecoder;
 import com.google.android.exoplayer2.util.Assertions;
+import com.google.android.exoplayer2.util.Log;
 import com.google.android.exoplayer2.util.LongArray;
 import com.google.android.exoplayer2.util.ParsableByteArray;
 import com.google.android.exoplayer2.util.Util;
@@ -49,7 +50,7 @@ public final class SsaDecoder extends SimpleSubtitleDecoder {
   private int formatTextIndex;
 
   public SsaDecoder() {
-    this(null);
+    this(/* initializationData= */ null);
   }
 
   /**
@@ -58,11 +59,11 @@ public final class SsaDecoder extends SimpleSubtitleDecoder {
    *     format line. The second must contain an SSA header that will be assumed common to all
    *     samples.
    */
-  public SsaDecoder(List<byte[]> initializationData) {
+  public SsaDecoder(@Nullable List<byte[]> initializationData) {
     super("SsaDecoder");
     if (initializationData != null && !initializationData.isEmpty()) {
       haveInitializationData = true;
-      String formatLine = new String(initializationData.get(0));
+      String formatLine = Util.fromUtf8Bytes(initializationData.get(0));
       Assertions.checkArgument(formatLine.startsWith(FORMAT_LINE_PREFIX));
       parseFormatLine(formatLine);
       parseHeader(new ParsableByteArray(initializationData.get(1)));
@@ -201,7 +202,7 @@ public final class SsaDecoder extends SimpleSubtitleDecoder {
     cues.add(new Cue(text));
     cueTimesUs.add(startTimeUs);
     if (endTimeUs != C.TIME_UNSET) {
-      cues.add(null);
+      cues.add(Cue.EMPTY);
       cueTimesUs.add(endTimeUs);
     }
   }

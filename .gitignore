@@ -37,11 +37,20 @@ local.properties
 proguard.cfg
 proguard-project.txt
 
+# Bazel
+bazel-bin
+bazel-genfiles
+bazel-out
+bazel-testlogs
+
 # Other
 .DS_Store
 cmake-build-debug
 dist
 tmp
+
+# External native builds
+.externalNativeBuild
 
 # VP9 extension
 extensions/vp9/src/main/jni/libvpx

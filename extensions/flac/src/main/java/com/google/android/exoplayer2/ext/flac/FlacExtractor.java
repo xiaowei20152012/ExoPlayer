@@ -17,55 +17,94 @@ package com.google.android.exoplayer2.ext.flac;
 
 import static com.google.android.exoplayer2.util.Util.getPcmEncoding;
 
+import androidx.annotation.IntDef;
+import androidx.annotation.Nullable;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.Format;
+import com.google.android.exoplayer2.extractor.BinarySearchSeeker.OutputFrameHolder;
 import com.google.android.exoplayer2.extractor.Extractor;
 import com.google.android.exoplayer2.extractor.ExtractorInput;
 import com.google.android.exoplayer2.extractor.ExtractorOutput;
 import com.google.android.exoplayer2.extractor.ExtractorsFactory;
+import com.google.android.exoplayer2.extractor.Id3Peeker;
 import com.google.android.exoplayer2.extractor.PositionHolder;
 import com.google.android.exoplayer2.extractor.SeekMap;
 import com.google.android.exoplayer2.extractor.SeekPoint;
 import com.google.android.exoplayer2.extractor.TrackOutput;
-import com.google.android.exoplayer2.util.FlacStreamInfo;
+import com.google.android.exoplayer2.metadata.Metadata;
+import com.google.android.exoplayer2.metadata.id3.Id3Decoder;
+import com.google.android.exoplayer2.util.Assertions;
+import com.google.android.exoplayer2.util.FlacStreamMetadata;
 import com.google.android.exoplayer2.util.MimeTypes;
 import com.google.android.exoplayer2.util.ParsableByteArray;
 import java.io.IOException;
+import java.lang.annotation.Documented;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
+import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+import org.checkerframework.checker.nullness.qual.RequiresNonNull;
 
 /**
  * Facilitates the extraction of data from the FLAC container format.
  */
 public final class FlacExtractor implements Extractor {
 
-  /**
-   * Factory that returns one extractor which is a {@link FlacExtractor}.
-   */
-  public static final ExtractorsFactory FACTORY = new ExtractorsFactory() {
-
-    @Override
-    public Extractor[] createExtractors() {
-      return new Extractor[] {new FlacExtractor()};
-    }
-
-  };
+  /** Factory that returns one extractor which is a {@link FlacExtractor}. */
+  public static final ExtractorsFactory FACTORY = () -> new Extractor[] {new FlacExtractor()};
 
   /**
-   * FLAC signature: first 4 is the signature word, second 4 is the sizeof STREAMINFO. 0x22 is the
-   * mandatory STREAMINFO.
+   * Flags controlling the behavior of the extractor. Possible flag value is {@link
+   * #FLAG_DISABLE_ID3_METADATA}.
    */
-  private static final byte[] FLAC_SIGNATURE = {'f', 'L', 'a', 'C', 0, 0, 0, 0x22};
+  @Documented
+  @Retention(RetentionPolicy.SOURCE)
+  @IntDef(
+      flag = true,
+      value = {FLAG_DISABLE_ID3_METADATA})
+  public @interface Flags {}
 
-  private ExtractorOutput extractorOutput;
-  private TrackOutput trackOutput;
+  /**
+   * Flag to disable parsing of ID3 metadata. Can be set to save memory if ID3 metadata is not
+   * required.
+   */
+  public static final int FLAG_DISABLE_ID3_METADATA = 1;
 
-  private FlacDecoderJni decoderJni;
+  /** FLAC stream marker */
+  private static final byte[] FLAC_STREAM_MARKER = {'f', 'L', 'a', 'C'};
 
-  private boolean metadataParsed;
+  private final ParsableByteArray outputBuffer;
+  private final Id3Peeker id3Peeker;
+  private final boolean id3MetadataDisabled;
 
-  private ParsableByteArray outputBuffer;
-  private ByteBuffer outputByteBuffer;
+  @Nullable private FlacDecoderJni decoderJni;
+  private @MonotonicNonNull ExtractorOutput extractorOutput;
+  private @MonotonicNonNull TrackOutput trackOutput;
+
+  private boolean streamMetadataDecoded;
+  private @MonotonicNonNull FlacStreamMetadata streamMetadata;
+  private @MonotonicNonNull OutputFrameHolder outputFrameHolder;
+
+  @Nullable private Metadata id3Metadata;
+  @Nullable private FlacBinarySearchSeeker binarySearchSeeker;
+
+  /** Constructs an instance with flags = 0. */
+  public FlacExtractor() {
+    this(/* flags= */ 0);
+  }
+
+  /**
+   * Constructs an instance.
+   *
+   * @param flags Flags that control the extractor's behavior.
+   */
+  public FlacExtractor(int flags) {
+    outputBuffer = new ParsableByteArray();
+    id3Peeker = new Id3Peeker();
+    id3MetadataDisabled = (flags & FLAG_DISABLE_ID3_METADATA) != 0;
+  }
 
   @Override
   public void init(ExtractorOutput output) {
@@ -81,95 +120,207 @@ public final class FlacExtractor implements Extractor {
 
   @Override
   public boolean sniff(ExtractorInput input) throws IOException, InterruptedException {
-    byte[] header = new byte[FLAC_SIGNATURE.length];
-    input.peekFully(header, 0, FLAC_SIGNATURE.length);
-    return Arrays.equals(header, FLAC_SIGNATURE);
+    if (input.getPosition() == 0) {
+      id3Metadata = peekId3Data(input);
+    }
+    return peekFlacStreamMarker(input);
   }
 
   @Override
   public int read(final ExtractorInput input, PositionHolder seekPosition)
       throws IOException, InterruptedException {
-    decoderJni.setData(input);
-
-    if (!metadataParsed) {
-      final FlacStreamInfo streamInfo;
-      try {
-        streamInfo = decoderJni.decodeMetadata();
-        if (streamInfo == null) {
-          throw new IOException("Metadata decoding failed");
-        }
-      } catch (IOException e) {
-        decoderJni.reset(0);
-        input.setRetryPosition(0, e);
-        throw e; // never executes
-      }
-      metadataParsed = true;
-
-      boolean isSeekable = decoderJni.getSeekPosition(0) != -1;
-      extractorOutput.seekMap(
-          isSeekable
-              ? new FlacSeekMap(streamInfo.durationUs(), decoderJni)
-              : new SeekMap.Unseekable(streamInfo.durationUs(), 0));
-      Format mediaFormat =
-          Format.createAudioSampleFormat(
-              null,
-              MimeTypes.AUDIO_RAW,
-              null,
-              streamInfo.bitRate(),
-              Format.NO_VALUE,
-              streamInfo.channels,
-              streamInfo.sampleRate,
-              getPcmEncoding(streamInfo.bitsPerSample),
-              null,
-              null,
-              0,
-              null);
-      trackOutput.format(mediaFormat);
-
-      outputBuffer = new ParsableByteArray(streamInfo.maxDecodedFrameSize());
-      outputByteBuffer = ByteBuffer.wrap(outputBuffer.data);
+    if (input.getPosition() == 0 && !id3MetadataDisabled && id3Metadata == null) {
+      id3Metadata = peekId3Data(input);
     }
 
-    outputBuffer.reset();
-    long lastDecodePosition = decoderJni.getDecodePosition();
-    int size;
+    FlacDecoderJni decoderJni = initDecoderJni(input);
     try {
-      size = decoderJni.decodeSample(outputByteBuffer);
-    } catch (IOException e) {
-      if (lastDecodePosition >= 0) {
-        decoderJni.reset(lastDecodePosition);
-        input.setRetryPosition(lastDecodePosition, e);
-      }
-      throw e;
-    }
-    if (size <= 0) {
-      return RESULT_END_OF_INPUT;
-    }
-    trackOutput.sampleData(outputBuffer, size);
-    trackOutput.sampleMetadata(decoderJni.getLastSampleTimestamp(), C.BUFFER_FLAG_KEY_FRAME, size,
-        0, null);
+      decodeStreamMetadata(input);
 
-    return decoderJni.isEndOfData() ? RESULT_END_OF_INPUT : RESULT_CONTINUE;
+      if (binarySearchSeeker != null && binarySearchSeeker.isSeeking()) {
+        return handlePendingSeek(input, seekPosition, outputBuffer, outputFrameHolder, trackOutput);
+      }
+
+      ByteBuffer outputByteBuffer = outputFrameHolder.byteBuffer;
+      long lastDecodePosition = decoderJni.getDecodePosition();
+      try {
+        decoderJni.decodeSampleWithBacktrackPosition(outputByteBuffer, lastDecodePosition);
+      } catch (FlacDecoderJni.FlacFrameDecodeException e) {
+        throw new IOException("Cannot read frame at position " + lastDecodePosition, e);
+      }
+      int outputSize = outputByteBuffer.limit();
+      if (outputSize == 0) {
+        return RESULT_END_OF_INPUT;
+      }
+
+      outputSample(outputBuffer, outputSize, decoderJni.getLastFrameTimestamp(), trackOutput);
+      return decoderJni.isEndOfData() ? RESULT_END_OF_INPUT : RESULT_CONTINUE;
+    } finally {
+      decoderJni.clearData();
+    }
   }
 
   @Override
   public void seek(long position, long timeUs) {
     if (position == 0) {
-      metadataParsed = false;
+      streamMetadataDecoded = false;
     }
     if (decoderJni != null) {
       decoderJni.reset(position);
+    }
+    if (binarySearchSeeker != null) {
+      binarySearchSeeker.setSeekTargetUs(timeUs);
     }
   }
 
   @Override
   public void release() {
+    binarySearchSeeker = null;
     if (decoderJni != null) {
       decoderJni.release();
       decoderJni = null;
     }
   }
 
+  /**
+   * Peeks ID3 tag data at the beginning of the input.
+   *
+   * @return The first ID3 tag {@link Metadata}, or null if an ID3 tag is not present in the input.
+   */
+  @Nullable
+  private Metadata peekId3Data(ExtractorInput input) throws IOException, InterruptedException {
+    input.resetPeekPosition();
+    Id3Decoder.FramePredicate id3FramePredicate =
+        id3MetadataDisabled ? Id3Decoder.NO_FRAMES_PREDICATE : null;
+    return id3Peeker.peekId3Data(input, id3FramePredicate);
+  }
+
+  @EnsuresNonNull({"decoderJni", "extractorOutput", "trackOutput"}) // Ensures initialized.
+  @SuppressWarnings({"contracts.postcondition.not.satisfied"})
+  private FlacDecoderJni initDecoderJni(ExtractorInput input) {
+    FlacDecoderJni decoderJni = Assertions.checkNotNull(this.decoderJni);
+    decoderJni.setData(input);
+    return decoderJni;
+  }
+
+  @RequiresNonNull({"decoderJni", "extractorOutput", "trackOutput"}) // Requires initialized.
+  @EnsuresNonNull({"streamMetadata", "outputFrameHolder"}) // Ensures stream metadata decoded.
+  @SuppressWarnings({"contracts.postcondition.not.satisfied"})
+  private void decodeStreamMetadata(ExtractorInput input) throws InterruptedException, IOException {
+    if (streamMetadataDecoded) {
+      return;
+    }
+
+    FlacStreamMetadata streamMetadata;
+    try {
+      streamMetadata = decoderJni.decodeStreamMetadata();
+    } catch (IOException e) {
+      decoderJni.reset(/* newPosition= */ 0);
+      input.setRetryPosition(/* position= */ 0, e);
+      throw e;
+    }
+
+    streamMetadataDecoded = true;
+    if (this.streamMetadata == null) {
+      this.streamMetadata = streamMetadata;
+      binarySearchSeeker =
+          outputSeekMap(decoderJni, streamMetadata, input.getLength(), extractorOutput);
+      Metadata metadata = id3MetadataDisabled ? null : id3Metadata;
+      if (streamMetadata.metadata != null) {
+        metadata = streamMetadata.metadata.copyWithAppendedEntriesFrom(metadata);
+      }
+      outputFormat(streamMetadata, metadata, trackOutput);
+      outputBuffer.reset(streamMetadata.maxDecodedFrameSize());
+      outputFrameHolder = new OutputFrameHolder(ByteBuffer.wrap(outputBuffer.data));
+    }
+  }
+
+  @RequiresNonNull("binarySearchSeeker")
+  private int handlePendingSeek(
+      ExtractorInput input,
+      PositionHolder seekPosition,
+      ParsableByteArray outputBuffer,
+      OutputFrameHolder outputFrameHolder,
+      TrackOutput trackOutput)
+      throws InterruptedException, IOException {
+    int seekResult = binarySearchSeeker.handlePendingSeek(input, seekPosition, outputFrameHolder);
+    ByteBuffer outputByteBuffer = outputFrameHolder.byteBuffer;
+    if (seekResult == RESULT_CONTINUE && outputByteBuffer.limit() > 0) {
+      outputSample(outputBuffer, outputByteBuffer.limit(), outputFrameHolder.timeUs, trackOutput);
+    }
+    return seekResult;
+  }
+
+  /**
+   * Peeks from the beginning of the input to see if {@link #FLAC_STREAM_MARKER} is present.
+   *
+   * @return Whether the input begins with {@link #FLAC_STREAM_MARKER}.
+   */
+  private static boolean peekFlacStreamMarker(ExtractorInput input)
+      throws IOException, InterruptedException {
+    byte[] header = new byte[FLAC_STREAM_MARKER.length];
+    input.peekFully(header, /* offset= */ 0, FLAC_STREAM_MARKER.length);
+    return Arrays.equals(header, FLAC_STREAM_MARKER);
+  }
+
+  /**
+   * Outputs a {@link SeekMap} and returns a {@link FlacBinarySearchSeeker} if one is required to
+   * handle seeks.
+   */
+  @Nullable
+  private static FlacBinarySearchSeeker outputSeekMap(
+      FlacDecoderJni decoderJni,
+      FlacStreamMetadata streamMetadata,
+      long streamLength,
+      ExtractorOutput output) {
+    boolean haveSeekTable = decoderJni.getSeekPoints(/* timeUs= */ 0) != null;
+    FlacBinarySearchSeeker binarySearchSeeker = null;
+    SeekMap seekMap;
+    if (haveSeekTable) {
+      seekMap = new FlacSeekMap(streamMetadata.durationUs(), decoderJni);
+    } else if (streamLength != C.LENGTH_UNSET) {
+      long firstFramePosition = decoderJni.getDecodePosition();
+      binarySearchSeeker =
+          new FlacBinarySearchSeeker(streamMetadata, firstFramePosition, streamLength, decoderJni);
+      seekMap = binarySearchSeeker.getSeekMap();
+    } else {
+      seekMap = new SeekMap.Unseekable(streamMetadata.durationUs());
+    }
+    output.seekMap(seekMap);
+    return binarySearchSeeker;
+  }
+
+  private static void outputFormat(
+      FlacStreamMetadata streamMetadata, @Nullable Metadata metadata, TrackOutput output) {
+    Format mediaFormat =
+        Format.createAudioSampleFormat(
+            /* id= */ null,
+            MimeTypes.AUDIO_RAW,
+            /* codecs= */ null,
+            streamMetadata.bitRate(),
+            streamMetadata.maxDecodedFrameSize(),
+            streamMetadata.channels,
+            streamMetadata.sampleRate,
+            getPcmEncoding(streamMetadata.bitsPerSample),
+            /* encoderDelay= */ 0,
+            /* encoderPadding= */ 0,
+            /* initializationData= */ null,
+            /* drmInitData= */ null,
+            /* selectionFlags= */ 0,
+            /* language= */ null,
+            metadata);
+    output.format(mediaFormat);
+  }
+
+  private static void outputSample(
+      ParsableByteArray sampleData, int size, long timeUs, TrackOutput output) {
+    sampleData.setPosition(0);
+    output.sampleData(sampleData, size);
+    output.sampleMetadata(
+        timeUs, C.BUFFER_FLAG_KEY_FRAME, size, /* offset= */ 0, /* encryptionData= */ null);
+  }
+
+  /** A {@link SeekMap} implementation using a SeekTable within the Flac stream. */
   private static final class FlacSeekMap implements SeekMap {
 
     private final long durationUs;
@@ -187,8 +338,8 @@ public final class FlacExtractor implements Extractor {
 
     @Override
     public SeekPoints getSeekPoints(long timeUs) {
-      // TODO: Access the seek table via JNI to return two seek points when appropriate.
-      return new SeekPoints(new SeekPoint(timeUs, decoderJni.getSeekPosition(timeUs)));
+      @Nullable SeekPoints seekPoints = decoderJni.getSeekPoints(timeUs);
+      return seekPoints == null ? new SeekPoints(SeekPoint.START) : seekPoints;
     }
 
     @Override

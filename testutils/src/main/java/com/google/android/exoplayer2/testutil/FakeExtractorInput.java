@@ -20,6 +20,7 @@ import static com.google.common.truth.Truth.assertThat;
 import android.util.SparseBooleanArray;
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.extractor.ExtractorInput;
+import com.google.android.exoplayer2.util.Util;
 import java.io.EOFException;
 import java.io.IOException;
 
@@ -77,6 +78,15 @@ public final class FakeExtractorInput implements ExtractorInput {
     partiallySatisfiedTargetPositions = new SparseBooleanArray();
     failedReadPositions = new SparseBooleanArray();
     failedPeekPositions = new SparseBooleanArray();
+  }
+
+  /** Resets the input to its initial state. */
+  public void reset() {
+    readPosition = 0;
+    peekPosition = 0;
+    partiallySatisfiedTargetPositions.clear();
+    failedReadPositions.clear();
+    failedPeekPositions.clear();
   }
 
   /**
@@ -255,7 +265,7 @@ public final class FakeExtractorInput implements ExtractorInput {
     private boolean simulateIOErrors;
 
     public Builder() {
-      data = new byte[0];
+      data = Util.EMPTY_BYTE_ARRAY;
     }
 
     public Builder setData(byte[] data) {
