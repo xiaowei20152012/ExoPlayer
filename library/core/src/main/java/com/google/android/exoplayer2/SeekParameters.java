@@ -35,14 +35,14 @@ import com.google.android.exoplayer2.util.Assertions;
  */
 public final class SeekParameters {
 
-  /** Parameters for exact seeking. */
+  /** Parameters for exact seeking.精确seeking */
   public static final SeekParameters EXACT = new SeekParameters(0, 0);
-  /** Parameters for seeking to the closest sync point. */
+  /** Parameters for seeking to the closest sync point.最近关键帧seek */
   public static final SeekParameters CLOSEST_SYNC =
       new SeekParameters(Long.MAX_VALUE, Long.MAX_VALUE);
-  /** Parameters for seeking to the sync point immediately before a requested seek position. */
+  /** 向前seekParameters for seeking to the sync point immediately before a requested seek position. */
   public static final SeekParameters PREVIOUS_SYNC = new SeekParameters(Long.MAX_VALUE, 0);
-  /** Parameters for seeking to the sync point immediately after a requested seek position. */
+  /** 向后seek Parameters for seeking to the sync point immediately after a requested seek position. */
   public static final SeekParameters NEXT_SYNC = new SeekParameters(0, Long.MAX_VALUE);
   /** Default parameters. */
   public static final SeekParameters DEFAULT = EXACT;
