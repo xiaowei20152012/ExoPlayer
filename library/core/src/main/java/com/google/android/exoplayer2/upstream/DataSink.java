@@ -19,6 +19,7 @@ import java.io.IOException;
 
 /**
  * A component to which streams of data can be written.
+ * 组件 哪个流数据可以写
  */
 public interface DataSink {
 

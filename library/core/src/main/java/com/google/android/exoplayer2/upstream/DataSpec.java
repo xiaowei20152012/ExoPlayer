@@ -27,6 +27,7 @@ import java.util.Arrays;
 
 /**
  * Defines a region of data.
+ * 定义一个数据区域
  */
 public final class DataSpec {
 

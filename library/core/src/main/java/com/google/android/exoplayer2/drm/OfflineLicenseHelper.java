@@ -32,6 +32,7 @@ import java.util.UUID;
 
 /**
  * Helper class to download, renew and release offline licenses.
+ * 帮助类 用来下载 更新 发布 离线许可证
  */
 public final class OfflineLicenseHelper<T extends ExoMediaCrypto> {
 
@@ -221,6 +222,7 @@ public final class OfflineLicenseHelper<T extends ExoMediaCrypto> {
 
   /**
    * Returns the remaining license and playback durations in seconds, for an offline license.
+   * 为离线许可证返回剩余的许可证和播放持续时间 以秒为单位.
    *
    * @param offlineLicenseKeySetId The key set id of the license.
    * @return The remaining license and playback durations, in seconds.

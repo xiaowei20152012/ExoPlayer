@@ -22,10 +22,12 @@ import java.util.List;
 
 /**
  * Encapsulates media content components over a contiguous period of time.
+ * 封装一段连续时间内的媒体内容组件
  */
 public class Period {
 
   /**
+   * 期间标识符
    * The period identifier, if one exists.
    */
   @Nullable public final String id;

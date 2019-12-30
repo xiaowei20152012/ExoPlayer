@@ -970,6 +970,7 @@ public abstract class MediaCodecRenderer extends BaseRenderer {
 
   /**
    * @return Whether it may be possible to feed more input data.
+   * 是否有可能提供更多的输入数据
    * @throws ExoPlaybackException If an error occurs feeding the input buffer.
    */
   private boolean feedInputBuffer() throws ExoPlaybackException {

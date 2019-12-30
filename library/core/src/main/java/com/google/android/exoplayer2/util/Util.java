@@ -90,6 +90,7 @@ import org.checkerframework.checker.nullness.qual.PolyNull;
 
 /**
  * Miscellaneous utility methods.
+ * 各种各样的实用方法
  */
 public final class Util {
 

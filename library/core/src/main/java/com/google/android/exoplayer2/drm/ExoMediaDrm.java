@@ -30,6 +30,7 @@ import java.util.UUID;
 
 /**
  * Used to obtain keys for decrypting protected media streams. See {@link android.media.MediaDrm}.
+ * 用于获取密钥以解密受保护的媒体流
  */
 public interface ExoMediaDrm<T extends ExoMediaCrypto> {
 
